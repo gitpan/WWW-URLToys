@@ -4,7 +4,7 @@
 # URLToys, Perl-style and command-line driven by Joe Drago
 # Now URLToys.pm, the Perl Module!
 # 
-# Version 1.27 - Updated 6/17/2004
+# Version 1.28 - Updated 6/19/2004
 #
 # The ChangeLog is at the end of the documentation.
 # ********************************************************
@@ -125,7 +125,6 @@ if you create a GUI flux. Please see urltoysw for an example.
 	$config_save_url_list
 	$config_explain_regex_error
 	$config_useundo
-	$config_replace_with_regex
 	$config_use_xttitle
 	$config_pausetime
 	$config_downloaddir
@@ -149,10 +148,10 @@ package WWW::URLToys;
 use strict;
 
 # Standard Perl denotation for Version
-our $VERSION = "1.27";
+our $VERSION = "1.28";
 
 # How URLToys refers to its Version
-my $URLTOYS_VERSION = "URLToys Version 1.27 (6/17/2004)";
+my $URLTOYS_VERSION = "URLToys Version 1.28 (6/19/2004)";
 
 use Exporter;
 
@@ -191,7 +190,6 @@ our @EXPORT_OK = 	qw/
 						$config_save_url_list
 						$config_explain_regex_error
 						$config_useundo
-						$config_replace_with_regex
 						$config_use_xttitle
 						$config_pausetime
 						$config_downloaddir
@@ -214,7 +212,6 @@ our %EXPORT_TAGS = 	(configvars => [
 						$config_save_url_list
 						$config_explain_regex_error
 						$config_useundo
-						$config_replace_with_regex
 						$config_use_xttitle
 						$config_pausetime
 						$config_downloaddir
@@ -270,6 +267,7 @@ my %helplines = (
 	cls          => "Clears the screen.",
 	cookies      => "Turns on the usage of cookies when talking to a web server.\nThe cookies will be maintained across\nmultiple conversations for the duration of the program.\n\ncookies\ncookies on\ncookies off\ncookies clear",
 	del          => "Deletes list entries that match a regular expression. For example:\n\ndel urltoys\n\n...will delete all URLs with the word 'urltoys' in it.\n\nSee docs for more info.",
+	flux         => "The heart of .flux is 'autorun'. This command executes a flux file.\n\nflux somefile.flux",
 	
 	keep         => "Just like the del command, only it keeps the matching lines other than\nremoving them. See the docs or the 'del' help.",
 
@@ -298,6 +296,7 @@ my %helplines = (
 	make         => "Generates a list of URLs, based on an optional custom regex.\nBy default, make uses the built-in href regex.\n\nmake\nmake someregex\n\nSee docs.",
 	
 	href         => "Generates a list of URLs, using the regular link finding regex.",
+	hrefimg      => "Generates a list of URLs, using the regular link finding regex\nand the IMG tag regex at the same time.",
 	img          => "Generates a list of URLs, using the IMG tags from the HTML pages.",
 	makeregex    => "Forces URLToys to only process the URLs matching this regex.\n\nSee the documentation!",
 	needparam    => "This is for script creation.\nSee the documentation.",
@@ -307,9 +306,11 @@ my %helplines = (
 	pwd          => "Prints the current working directory.",
 	resume       => "Resumes a partially downloaded list. You give it the directory its in:\n\nresume 00005\nresume someothername",
 	save         => "Save the list to a file.\n\nsave somefile.txt",
+	saveflux     => "Save the list to a flux file by attempting to combine as many lines as possible into fusker lines.\n\nsaveflux somefile.flux",
+	spider       => "Takes a parent URL and runs through all sub-URLs of that URL,\nfinding all IMG and A tags. \n\nspider",
 	system       => "Executes a system command.\n\nsystem dir\nsystem del somefile.txt",
-	systemw       => "Executes a system command, but only if in Windows.\n\nsystemw dir\nsystemw del somefile.txt",
-	systemu       => "Executes a system command, but only if in Unix/OSX.\n\nsystemu dir\nsystemu del somefile.txt",
+	systemw      => "Executes a system command, but only if in Windows.\n\nsystemw dir\nsystemw del somefile.txt",
+	systemu      => "Executes a system command, but only if in Unix/OSX.\n\nsystemu dir\nsystemu del somefile.txt",
 	seq          => "Build from numerical sequence.\n\nSee the documentation on this one.",
 	zeq          => "Build from numerical sequence.\n\nSee the documentation on this one.",
 	set          => "Sets configuration variables.\nYou can see all variables by typing 'set' alone.\n\nset\nset SomeVariable=SomeValue",
@@ -322,7 +323,8 @@ my %helplines = (
 	head         => "Shows the beginning N URLs of the list.\n\nhead 10",
 	tail         => "Shows the last N URLs of the list.\n\ntail 10",
 	print        => "Writes text to the screen.\nUsually used in scripts.\n\nprint Hello World!",
-	replace      => "Replaces text with new text.\nOptionally uses regexes (SEE DOCS!).\n\nreplace thisword withthisone",
+	replace      => "Replaces text with new text.\nUse rreplace for regex replacement, or\nstrip to replace with nothing.\n\nreplace thisword withthisone",
+	rreplace     => "Replaces text with new text.\nUse replace or strip for nonregex replacement.\n\nrreplace /someregex/somevalue/",
 	sort         => "Sorts the list, using Perl's built-in sort.\nSee nsort for another possibility.",
 	strip        => "Strips unwanted text from all URLs in the list.\n\nstrip thistextout",
 	title        => "Sets the title bar of the program. Used in scripts usually.",
@@ -349,7 +351,6 @@ our $config_name_template = '%COUNT-%NAME';
 our $config_save_url_list = 1;
 our $config_explain_regex_error = 0;
 our $config_useundo = 1;
-our $config_replace_with_regex = 0;
 our $config_use_xttitle = 0;
 our $config_pausetime = 0;
 our $config_downloaddir = "";
@@ -404,6 +405,8 @@ my $resume_spot;
 
 # Version 1.24 ... for 'header' command
 my %headers = ();
+
+sub KEEPALIVECOUNT() { 10 };
 
 # Used for custom command parameters .. an array of array refs
 my @params;
@@ -576,7 +579,6 @@ sub handleconfigline
 	$config_save_url_list 		= $what if($which =~ /^SaveURLList$/i);
 	$config_explain_regex_error = $what if($which =~ /^ExplainRegexError$/i);
 	$config_useundo             = $what if($which =~ /^UseUndo$/i);
-	$config_replace_with_regex  = $what if($which =~ /^ReplaceWithRegex$/i);
 	$config_use_xttitle         = $what if($which =~ /^UseXTTitle$/i);
 	$config_pausetime           = $what if($which =~ /^PauseTime$/i);
 	$config_downloaddir         = $what if($which =~ /^DownloadDir$/i);
@@ -626,7 +628,6 @@ sub saveconfig
 	print CONFIGFILE "SaveURLList=$config_save_url_list\n";
 	print CONFIGFILE "ExplainRegexError=$config_explain_regex_error\n";
 	print CONFIGFILE "UseUndo=$config_useundo\n";
-	print CONFIGFILE "ReplaceWithRegex=$config_replace_with_regex\n";
 	print CONFIGFILE "UseXTTitle=$config_use_xttitle\n";
 	print CONFIGFILE "PauseTime=$config_pausetime\n";
 	print CONFIGFILE "DownloadDir=$config_downloaddir\n";
@@ -652,7 +653,6 @@ sub showconfig
 	cb('output',"SaveURLList=$config_save_url_list\n",0);
 	cb('output',"ExplainRegexError=$config_explain_regex_error\n",0);
 	cb('output',"UseUndo=$config_useundo\n",0);
-	cb('output',"ReplaceWithRegex=$config_replace_with_regex\n",0);
 	cb('output',"UseXTTitle=$config_use_xttitle\n",0);
 	cb('output',"PauseTime=$config_pausetime\n",0);
 	cb('output',"DownloadDir=$config_downloaddir\n",0);
@@ -1023,6 +1023,7 @@ sub skipext
 
 sub getlinks
 {
+	my $useragent = shift;
 	my $argurl = shift;
 	my $regexarray = shift;
 	my $count = shift;
@@ -1063,10 +1064,6 @@ sub getlinks
 	}
 
 	cb('makeupdate',"Searching ($count/$total) \"$url\"...",0);
-
-	my $useragent = LWP::UserAgent->new;
-	$useragent->agent($config_useragent);
-	setupagent($useragent);
 	
 	my $req = HTTP::Request->new(GET => $url);
 
@@ -1128,6 +1125,10 @@ sub ut_getlinks_array
 
 	my $count = 0;
 	my $total = @$list;
+	
+	my $useragent = LWP::UserAgent->new( keep_alive => KEEPALIVECOUNT);
+	$useragent->agent($config_useragent);
+	setupagent($useragent);
 
 	foreach $link (@$list)
 	{
@@ -1154,7 +1155,7 @@ sub ut_getlinks_array
 			}
 			cb('variable','ct',"[Search ($count/$total) ] $link");
 
-			my @sitelist = getlinks($link,$regexarray,$count,$total);
+			my @sitelist = getlinks($useragent,$link,$regexarray,$count,$total);
 
 			if(@sitelist > 0)
 			{
@@ -1277,6 +1278,7 @@ sub downloadfile
 {
 	# $count is used as a unique number, created inside of downloadfile_array
 	
+	my $useragent = shift;
 	my $url = shift;
 	my $count = shift;
 
@@ -1421,10 +1423,6 @@ sub downloadfile
 			cb('dlupdate',"Downloading \"$url\"...\n",0);
 		}
 
-		my $useragent = LWP::UserAgent->new;
-		$useragent->agent($config_useragent);
-		setupagent($useragent);
-
 		$badsize = 0;
 		my $response = $useragent->request($req, \&downloadfile_callback, 4096);
 		close(OUTPUT);
@@ -1530,6 +1528,10 @@ sub downloadfile_array
 	}
 
 	cb('begin',$dir,0);
+
+	my $useragent = LWP::UserAgent->new( keep_alive => KEEPALIVECOUNT);
+	$useragent->agent($config_useragent);
+	setupagent($useragent);
 	
 	$stop_getting_links = 0;
 	foreach $link (@$list)
@@ -1543,7 +1545,7 @@ sub downloadfile_array
 		cb('variable','ct',"$link");
 		cb('variable','tt',"Downloading ($download_count/$download_total)...");
 		
-		downloadfile($link,$count);
+		downloadfile($useragent,$link,$count);
 		if($config_pausetime)
 		{
 			cb('dlupdate',"Sleeping $config_pausetime seconds...\n",0);
@@ -1654,6 +1656,10 @@ sub resume_list
 	$download_count = 0;
 	$download_total = @resumelist;
 
+	my $useragent = LWP::UserAgent->new( keep_alive => KEEPALIVECOUNT);
+	$useragent->agent($config_useragent);
+	setupagent($useragent);
+
 	$stop_getting_links = 0;
 
 	foreach $link (@resumelist)
@@ -1667,7 +1673,7 @@ sub resume_list
 		cb('variable','ct',"$link");
 		cb('variable','tt',"Downloading ($download_count/$download_total)...");
 
-		downloadfile($link,$count);
+		downloadfile($useragent,$link,$count);
 		if($config_pausetime)
 		{
 			cb('dlupdate',"Sleeping $config_pausetime seconds...\n",0);
@@ -1768,7 +1774,7 @@ sub replace
 	}
 
 	# Fixed 1.09b
-	$_ =~ s/$tofind/$replacewith/ foreach(@$list);
+	$_ =~ s/$tofind/$replacewith/g foreach(@$list);
 
 	return @$list;
 }
@@ -2365,6 +2371,201 @@ sub seq
 	return @seqlist;
 }
 
+sub lengthsort
+{
+	my $list = shift;
+	my %n;
+
+	for my $v (@$list)
+	{
+		push(@{$n{length $v}},$v);
+	}
+
+	my @final;
+
+	for my $k (sort keys %n)
+	{
+		push @final, sort @{$n{$k}};
+	}
+
+	return @final;
+}
+
+sub autofusk
+{
+	my $list = shift;
+	my @unoptimized;
+	my @final;
+	my %f;
+
+	if(@$list < 1)
+	{
+		# An empty list is sorted.
+		return @$list;
+	}
+
+	# %f is a hash table of arrays. The key is the URL template,
+	# and the values of the array are numbers that go in the 
+	# template.
+
+	# Using http://www.example.com/pic35.jpg as an example ...
+
+	for my $u (@$list)
+	{
+		if($u =~ m/^([^\[]+[^\[0-9])(\d+)(.*)$/)
+		{
+			my $prefix = $1; # http://www.example.com/
+			my $digit  = $2; # 35
+			my $suffix = $3; # .jpg
+
+			# http://www.example.com/pic<>.jpg
+			my $hashvalue = "$prefix<>$suffix";
+
+			# push 35 onto the array @${http://www.example.com/pic<>.jpg}
+			push @{$f{$hashvalue}}, $digit;
+		}
+		else
+		{
+			# This will be where all of the prefusked or unfuskables go
+			push @unoptimized, $u;
+		}
+	}
+
+	# For all templated URLs (the hash values) ...
+	for my $hv (sort keys %f)
+	{
+		my $front = undef;
+		my $back = undef;
+	
+		# Sort a special way, by digit count. 9 goes before 03
+		my @valuelist = lengthsort(\@{$f{$hv}});
+		
+		for my $v (@valuelist)
+		{
+			if(!defined($front))
+			{
+				# First time in the loop ... set some basic values
+				$front = $v;
+				$back  = $v;
+			}
+			else
+			{
+				# Figure out what the next value would be
+				my $next = $back+1;
+
+				# Create a copy of the current value, without leading zeros
+				my $tempv = $v;
+				$tempv =~ s/^0+//;
+
+				# If keepgoing is false, break off a fresh fuskline
+				my $keepgoing = 0;
+				
+				$keepgoing = (int($next) == int($tempv));
+
+				if($keepgoing)
+				{
+					if(length($back) < length($v))
+					{
+						# if the bracketed values are different length
+						# due to a zero, break that
+
+						$keepgoing = 0 if($v =~ m/^0/);
+					}
+				}
+
+				if($keepgoing)
+				{
+					# Keep going, stretch out that list
+					$back = $v;
+				}
+				else
+				{
+					# Break off a new fusker line and reset f&b
+					my $fuskline = $hv;
+					$fuskline =~ s/<>/\[$front-$back\]/;
+					push @final,$fuskline;
+					$front = $v;
+					$back  = $v;
+				}
+			}
+		} # for my $v
+
+		my $fuskline = $hv;
+		$fuskline =~ s/<>/\[$front-$back\]/;
+		push @final,$fuskline;
+	}
+
+	my @blao = ();
+
+	if(@final > 0)
+	{	
+		# Recursion. This works because the intial regex
+		# ignores bracketed numbers, so something that 
+		# is all brackets will be ignored.
+		@blao = autofusk(\@final);
+	}
+
+	push @unoptimized,@blao;
+
+	# remove all brackets that don't do anything meaningful
+	return strip_dumb_brackets(\@unoptimized);
+}
+
+# strip all brackets where the two values are the same
+sub strip_dumb_brackets
+{
+	my $list = shift;
+
+	for(@$list)
+	{
+		while(m/\[(\d+)-(\d+)\]/g)
+		{
+			if(int($1) == int($2))
+			{
+				my $torep = "\\[$1-$2\\]";
+				my $with = $1;
+				s/$torep/$with/g;
+			}
+		}
+	}
+
+	return @$list;
+}
+
+
+sub saveflux
+{
+	my $list = shift;
+	my $filename = shift;
+
+	if(!open(FLUXFILE,"> $filename"))
+	{
+		cb('error',"Could not open $filename, sorry.\n",0);
+		return;
+	}
+	
+	my @answer = autofusk($list);
+
+	for(@answer)
+	{
+		if(m/\[\d+-\d+\]/)
+		{
+			print FLUXFILE "fusk $_\n";
+		}
+		else
+		{
+			print FLUXFILE "$_\n";
+		}
+	}
+
+	close(FLUXFILE);
+
+	return if(@answer < 1);	
+	my $stats = "Saved \"$filename\" - " . @$list . " URLs in " . @answer . " command(s). Efficiency Index: " . 
+		sprintf("%2.2f",scalar(@$list)/scalar(@answer)). "\n";
+	cb('output',$stats,0);
+}
+
 # Saint Marck gets all of the credit on this one
 
 sub fusk {
@@ -2803,7 +3004,25 @@ sub ut_exec_command
 		{ 
 			addhistory($_);
 			setaction('replace');
-			@$utlist = replace($utlist,$1,$2,$config_replace_with_regex);
+			@$utlist = replace($utlist,$1,$2,0);
+			endaction;
+			last CMDPARSE;
+		};
+
+		if (/^rreplace(?:\s+)?$/i) { helpsyntax('rreplace'); last CMDPARSE;};
+		if (/^rreplace\s+(.*)$/i)
+		{ 
+			addhistory($_);
+			setaction('replace');
+			$_ = $1;
+			if (/^s?\/(.*)(?<!\\)\/(.*)(?<!\\)\/.*$/i)
+			{
+				@$utlist = replace($utlist,$1,$2,1);
+			}
+			else
+			{
+				cb('error',"rreplace: Cannot understand that. Please check for errors.\n",0);
+			}
 			endaction;
 			last CMDPARSE;
 		};
@@ -2855,7 +3074,7 @@ sub ut_exec_command
 		{ 
 			addhistory($_);
 			setaction('replace');
-			@$utlist = replace_with_nothing($utlist,$1,$config_replace_with_regex);
+			@$utlist = replace_with_nothing($utlist,$1,0);
 			endaction;
 			last CMDPARSE;
 		};
@@ -3130,6 +3349,18 @@ sub ut_exec_command
 			addhistory($_);
 			setaction('save');
 			savetofile($utlist,$filename);
+			endaction;
+			last CMDPARSE;
+		};
+
+		if (/^saveflux(?:\s+)?$/i) { helpsyntax('saveflux'); last CMDPARSE;};
+		if (/^saveflux (.+)$/i)
+		{
+			my $filename = $1;
+			chomp($filename);
+			addhistory($_);
+			setaction('save');
+			saveflux($utlist,$filename);
 			endaction;
 			last CMDPARSE;
 		};
@@ -3417,6 +3648,7 @@ sub ut_exec_command
 					$w=1 if(m/^\s*cd/i);
 					$w=1 if(m/^\s*config/i);
 					$w=1 if(m/^\s*set/i);
+					$w=1 if(m/^\s*spider/i);
 
 					if($w)
 					{
