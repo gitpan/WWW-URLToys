@@ -4,7 +4,7 @@
 # URLToys, Perl-style and command-line driven by Joe Drago
 # Now URLToys.pm, the Perl Module!
 # 
-# Version 1.26 - Updated 5/06/2004
+# Version 1.27 - Updated 6/17/2004
 #
 # The ChangeLog is at the end of the documentation.
 # ********************************************************
@@ -149,10 +149,10 @@ package WWW::URLToys;
 use strict;
 
 # Standard Perl denotation for Version
-our $VERSION = "1.26";
+our $VERSION = "1.27";
 
 # How URLToys refers to its Version
-my $URLTOYS_VERSION = "URLToys Version 1.26 (5/06/2004)";
+my $URLTOYS_VERSION = "URLToys Version 1.27 (6/17/2004)";
 
 use Exporter;
 
@@ -171,6 +171,10 @@ our @EXPORT_OK = 	qw/
 						$URLTOYS_VERSION
 
 						ut_command_loop
+						ut_getlinks_array
+
+						$ut_term
+						ut_getnextline
 
 						loadconfig
 						saveconfig
@@ -230,16 +234,23 @@ use HTTP::Cookies;
 use URI::URL;
 
 # Used in the command line version, unless sufficiently hooked
-use Term::ReadLine;
+
+my $using_tk = (exists $INC{'Tk.pm'});
+
+unless($using_tk)
+{
+	require Term::ReadLine;
+	import Term::ReadLine /new/;
+
+	# Otherwise Windows complains
+	$Term::ReadLine::termcap_nowarn = 1;
+}
 
 # Used by the 'password' command
 use MIME::Base64;
 
 # Used throughout the code, most notably with 'pwd' and 'cwd'
 use Cwd;
-
-# Otherwise Windows complains
-$Term::ReadLine::termcap_nowarn = 1;
 
 # Built-in Help Text ... YES THIS IS UGLY! 
 
@@ -329,7 +340,7 @@ our $config_file = $ENV{"HOME"} . "/.urltoys/config";
 # These are the globals that can be saved to the config, and set with "set"
 our $config_useragent = "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; .NET CLR 1.0.3705)";
 our $config_ext_regex = "htm|html|exe|php|cgi|pl|shtml|asp|pl|cgi|stm|jsp";
-our $config_ext_ignore = "jpe?g|gif|png|tga|mov|avi|mpe?g|rm|bmp|mp3|ogg|wav";
+our $config_ext_ignore = "jpe?g|gif|png|tga|mov|avi|mpe?g|rm|bmp|mp3|ogg|wav|exe";
 our $config_custom_headers = 'Referer: %URL';
 our $config_href_regex = qr/[Hh][Rr][Ee][Ff]='?"?([^'"<>]+)/;
 our $config_img_regex = qr/[Ss][Rr][Cc]='?"?([^'"<>]+)/;
@@ -372,6 +383,8 @@ my @history = ();
 my $pulledfromundo = "";
 my $fromstdin = 0;
 
+my $loop_readptr = *STDIN;
+
 # Added 1.08
 my @undolist = ();
 
@@ -404,11 +417,19 @@ my @current_action = ('idle'); # Used like a stack
 # Makes my stuff "pipin' hot", AKA no buffering... otherwise that whole "command prompt" would suck.
 $| = 1;
 
-# Moved to global in 1.22 to fix Segfaults in Linux
-my $term = new Term::ReadLine "URLToys";
-my $OUT = $term->OUT || \*STDOUT;
+our ($ut_term,$OUT);
+$ut_term = 0;
 
-$term->ornaments(0);
+sub createterm
+{
+	unless($using_tk)
+	{
+		# Moved to global in 1.22 to fix Segfaults in Linux
+		$ut_term = new Term::ReadLine "URLToys";
+		$OUT = $ut_term->OUT || \*STDOUT;
+		$ut_term->ornaments(0);
+	}
+}
 
 # Version 1.10 Win32 Detection
 my $win32 = 0;
@@ -497,7 +518,7 @@ sub cb_warnuser
 
 	while(1)
 	{
-		my $text = $term->readline($prompt);
+		my $text = ut_getnextline(*STDIN,$prompt);
 		return 0 if($text =~ m/^no$/i);
 		return 1 if($text =~ m/^yes$/i);
 	};
@@ -652,6 +673,8 @@ sub set_title_bar
 sub makedir 
 {   
     my $Dir = shift;
+
+	$Dir =~ s/\/$//;
 
     unless (-d $Dir) 
 	{
@@ -937,12 +960,71 @@ sub setupagent
 	$useragent->cookie_jar($cookies) if ($use_cookies);
 }
 
+sub ext_and_parent
+{
+	my $url = shift;
+	my $parent;
+	my $parent_abs;
+	my $extension;
+
+	if($url =~ m/\/$/)
+	{
+		$parent = $url;
+		$extension = "";
+
+		if($url =~ m/(http:\/\/[^\/]+).*$/i)
+		{
+			$parent_abs = $1;
+		}
+
+	}
+	else
+	{
+		if($url =~ m/(http:\/\/.+\/)[^\/?]+\.([^\/?&]+)(\?[^\/]+)?/i)
+		{
+			$parent = $1;
+			$extension = $2;
+		}
+
+		if($url =~ m/(http:\/\/[^\/]+).*$/i)
+		{
+			$parent_abs = $1;
+		}
+	}
+
+	return ($parent,$parent_abs,$extension);
+}
+
+sub SKIPEXT_HTML() { 0 };
+sub SKIPEXT_NOTHTML() { 1 };
+sub SKIPEXT_IGNORED() { 2 };
+
+sub skipext
+{
+	my $ext = shift;
+	my $ret = SKIPEXT_HTML; # Dont skip by default
+
+	unless($ext =~ m/$config_ext_regex/i)
+	{
+		$ret = SKIPEXT_NOTHTML;
+	}
+	else
+	{
+		if($ext =~ m/$config_ext_ignore/i)
+		{
+			$ret = SKIPEXT_IGNORED;
+		}
+	}
+
+	return $ret;
+}
+
 # getlinks is the heart of all of of the "make" functions
 
 sub getlinks
 {
 	my $argurl = shift;
-	my $regex = shift;
+	my $regexarray = shift;
 	my $count = shift;
 	my $total = shift;
 
@@ -959,39 +1041,20 @@ sub getlinks
 	my $extension_allowed = 0;
 
 	# Figure out the parent URL here
-	# If it ends in a slash...
-	if($url =~ m/\/$/)
+	
+	($parent,$parent_abs,$extension) = ext_and_parent($url);
+
+	if($extension)
 	{
-		$parent = $url; 
-		$extension_allowed = 1;
+		my $se = skipext($extension);
 
-		if($url =~ m/(http:\/\/[^\/]+).*$/i)
-		{
-			$parent_abs = $1;
-		}
-
-	}
-	else
-	{
-		if($url =~ m/(http:\/\/.+\/)[^\/]+\.([^\/?]+)(\?[^\/]+)?/i)
-		{
-			$parent = $1;
-			$extension = $2;
-		}
-
-		if($url =~ m/(http:\/\/[^\/]+).*$/i)
-		{
-			$parent_abs = $1;
-		}
-
-		unless($extension =~ m/$config_ext_regex/i)
+		if($se == SKIPEXT_NOTHTML)
 		{
 			cb('makeupdate',"Skipping ($count/$total) \"$url\". ($extension not HTML)\n",0);
 			push(@lines,$url);
 			return @lines;
 		}
-
-		if($extension =~ m/$config_ext_ignore/i)
+		elsif($se == SKIPEXT_IGNORED)
 		{
 			cb('makeupdate',"Skipping ($count/$total) \"$url\". ($extension ignored)\n",0);
 			push(@lines,$url);
@@ -1015,27 +1078,32 @@ sub getlinks
 	{
 		my $html = $res->content;
 
-		while($html =~ m/$regex/gis)
+		for my $regex(@$regexarray)
 		{
-			my $link = $1;
 
-			if($link =~ m/^\//)
+			while($html =~ m/$regex/gis)
 			{
-				$link = $parent_abs . $link;
-			}
-			else
-			{
-				# Tacks on the parent portion of the url for a relative link
-				unless($link =~ m/^http:\/\//)
+				my $link = $1;
+
+				if($link =~ m/^\//)
 				{
-					# These two lines will change things like "/a/b/../1.jpg" to "/a/1.jpg"
-					my $tempurl = url $link;
-					$link = $tempurl->abs($parent);
+					$link = $parent_abs . $link;
 				}
-			}
+				else
+				{
+					# Tacks on the parent portion of the url for a relative link
+					unless($link =~ m/^http:\/\//)
+					{
+						# These two lines will change things like "/a/b/../1.jpg" to "/a/1.jpg"
+						my $tempurl = url $link;
+						$link = $tempurl->abs($parent);
+					}
+				}
 
-			push(@lines,$link);
-		}
+				push(@lines,$link);
+			} # while
+		} # for
+
 	}
 
 	my $foundlines = @lines . " found.\n";
@@ -1043,15 +1111,18 @@ sub getlinks
 	return @lines;
 }
 
-sub getlinks_array
+sub ut_getlinks_array
 {
 	my $list = shift;
-	my $regex = shift;
+	my $regexarray = shift;
 
 	my @final_list;
 	my $link;
 
-	return @$list if(!test_regex($regex));
+	for my $regex(@$regexarray)
+	{
+		return @$list if(!test_regex($regex));
+	}
 
 	$stop_getting_links = 0;
 
@@ -1083,7 +1154,7 @@ sub getlinks_array
 			}
 			cb('variable','ct',"[Search ($count/$total) ] $link");
 
-			my @sitelist = getlinks($link,$regex,$count,$total);
+			my @sitelist = getlinks($link,$regexarray,$count,$total);
 
 			if(@sitelist > 0)
 			{
@@ -1609,6 +1680,76 @@ sub resume_list
 	
 	cb('complete',$dir,0) unless($stop_getting_links);
 };
+
+sub spider
+{
+	my $utlist = shift;
+	my $prefix;
+	my %seen;
+	my @final;
+
+for(@$utlist)
+{
+	$prefix = $_;
+
+	$prefix =~ s/\/([^\/]+)$//;
+
+	my @l = ();
+	push @l, $_;
+	$seen{$prefix} = 1;
+
+	while(1)
+	{
+		$stop_getting_links = 0;
+		ut_exec_command("hrefimg",\@l);
+		return @$utlist if($stop_getting_links);
+
+		my @newl = ();
+	
+		for my $u (@l)
+		{
+
+			$u =~ s/(#.*)?$//;
+
+			next if($u =~ /^mailto/i);
+			next if($u =~ /^nntp:\/\//i);
+			if($u =~ /^ftp:\/\//i)
+			{
+				push @final,$u;
+				$seen{$u} = 1;
+				next;
+			}
+
+			unless($seen{$u})
+			{
+				$seen{$u} = 1;
+				push @final,$u;
+
+				my ($parent,$parent_abs,$extension) = ext_and_parent($u);
+
+				if($extension)
+				{
+					unless(skipext($extension))
+					{
+						push @newl,$u if($u =~ m/^$prefix/);
+					}
+				}
+				else
+				{
+					push @newl,$u if($u =~ m/^$prefix/);
+				}
+			}
+		}
+
+		@l = @newl;
+		last if(@l < 1);
+	}
+
+} # for
+
+return @final;
+
+}
 
 # *** LIST MANAGEMENT FUNCTIONS *************************
 
@@ -2218,7 +2359,7 @@ sub seq
 	}
 	else
 	{
-		@seqlist = ($url);
+		@seqlist = (reverse $url);
 	}
 
 	return @seqlist;
@@ -2549,7 +2690,7 @@ sub ut_exec_command
 			# This disables messing with the undo during this
 			my $cuu = $config_useundo;
 			$config_useundo = 0;
-			batchloop(*STDIN,$utlist,$batchline);
+			batchloop($loop_readptr,$utlist,$batchline);
 			$config_useundo = $cuu;
 			last CMDPARSE;
 		};
@@ -2735,6 +2876,18 @@ sub ut_exec_command
 			endaction;
 			last CMDPARSE;
 		};
+
+		if (/^spider$/i)
+		{ 
+			addhistory($_);
+			makeundo($utlist);
+			setaction('make');
+			$fromstdin = 0;
+			@$utlist = spider($utlist); 
+			endaction;
+			last CMDPARSE;
+		};
+
 
 		if (/^keepuni$/i)
 		{ 
@@ -3031,7 +3184,7 @@ sub ut_exec_command
 			addhistory($_);
 			makeundo($utlist);
 			setaction('make');
-			@$utlist = getlinks_array($utlist,$config_href_regex); 
+			@$utlist = ut_getlinks_array($utlist,[$config_href_regex]);
 			endaction;
 			last CMDPARSE;
 		}
@@ -3041,7 +3194,17 @@ sub ut_exec_command
 			addhistory($_);
 			makeundo($utlist);
 			setaction('make');
-			@$utlist = getlinks_array($utlist,$config_img_regex); 
+			@$utlist = ut_getlinks_array($utlist,[$config_img_regex]);
+			endaction;
+			last CMDPARSE;
+		}
+
+		if(/^hrefimg$/i)
+		{
+			addhistory($_);
+			makeundo($utlist);
+			setaction('make');
+			@$utlist = ut_getlinks_array($utlist,[$config_href_regex,$config_img_regex]);
 			endaction;
 			last CMDPARSE;
 		}
@@ -3117,7 +3280,7 @@ sub ut_exec_command
 				{
 					addhistory($_);
 					setaction('make');
-					@$utlist = getlinks_array($utlist,$new_regex); 
+					@$utlist = ut_getlinks_array($utlist,[$new_regex]); 
 					endaction;
 				};
 			}
@@ -3127,7 +3290,7 @@ sub ut_exec_command
 				{
 					addhistory($_);
 					setaction('make');
-					@$utlist = getlinks_array($utlist,$config_href_regex); 
+					@$utlist = ut_getlinks_array($utlist,[$config_href_regex]); 
 					endaction;
 				};
 			}
@@ -3334,7 +3497,7 @@ sub ut_exec_command
 	return 1;
 }
 
-sub getnextline
+sub ut_getnextline
 {
 	my $htr = shift;
 	my $prompt = shift;
@@ -3343,7 +3506,9 @@ sub getnextline
 	if(-t $htr)
 	{
 		$fromstdin = 1;
-		my $text = $term->readline($prompt);
+		createterm() unless($ut_term);
+		my $text = $ut_term->readline($prompt);
+		return "" unless(defined($text));
 		$text = " " if(!$text);
 		return $text;
 	}
@@ -3393,7 +3558,7 @@ sub batchloop
   my $batchprompt = "[batch][$batchcount] ";
 #  my $endbatch = 0;
 
-READCMD: while ($_ = getnextline($handletoread,$batchprompt))
+READCMD: while ($_ = ut_getnextline($handletoread,$batchprompt))
 {
 #	last if ($endbatch);
 
@@ -3455,17 +3620,20 @@ sub ut_command_loop
 
 	my $count = @$utlist;
 
+	$loop_readptr = $handletoread;
+
 	cb('title',"URLToys ($count)",0);
 
 	$stop_getting_links = 0;
 
 	my $currentline = 0;
 
-READCMD: while ($_ = getnextline($handletoread,createprompt($utlist)))
+READCMD: while ($_ = ut_getnextline($handletoread,createprompt($utlist)))
 {
+
 	s/\r+$//; # Fix issue with /r/n people making unix files
 
-	last if ($stop_getting_links);
+#	last if ($stop_getting_links);
 
 	if($fluxvarupdate)
 	{
@@ -3491,6 +3659,8 @@ READCMD: while ($_ = getnextline($handletoread,createprompt($utlist)))
 
 	$stop_getting_links = 0;
 }
+
+cb('output',"\n",0);
 
 }
 

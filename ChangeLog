@@ -1,0 +1,14 @@
+2004-06-17 Joe Drago <joe@urltoys.com>
+
+	- Version 1.27
+	- Added 'hrefimg' command
+    - Added 'spider' command
+    - fixed Tk INC for Unix users, now web-able (install docs coming soon)
+    - fixed internal makedir trailing slash bug
+    - fixed cb_warnuser: calls ut_getnextline now
+    - fixed extension checking bug (query string)
+    - fixed 'batch' command's behavior in a flux
+    - export ut_getnextline
+    - export $ut_term for overriding / replacing with own term var
+    - only creates Term::ReadLine on first need (if not existing)
+
